@@ -450,7 +450,7 @@ herdr-voice doesn't patch or extend Herdr itself. It drives Herdr through its pu
 
 | Voice tool | Herdr command |
 |---|---|
-| `list_agents` | `herdr agent list` |
+| `list_agents` | `herdr agent list`, `herdr machine list --json`, then `herdr --machine <id> agent list` for enabled saved workers |
 | `prompt_agent` | `herdr agent prompt <agent> <text> --wait --until working --until blocked`, then `herdr agent wait` in the background |
 | `read_agent` | `herdr agent read <agent> --source recent` |
 | `answer_agent` | `herdr agent send-keys <agent> <key>` (keys: `enter esc up down tab y n 1-9`; `enter`, `y` and digits need your spoken yes) |
@@ -473,6 +473,18 @@ herdr-voice doesn't patch or extend Herdr itself. It drives Herdr through its pu
 | `close_workspace` / `close_tab` | `herdr workspace close` / `herdr tab close` |
 | `remove_worktree` | `herdr worktree remove --workspace <id>` (never `--force`) |
 | `run_shell` (opt-in) | Not a Herdr command: `zsh -c <command>` in the chosen folder, after your spoken yes |
+
+**Remote agent discovery.** `list_agents` includes agents from enabled saved SSH machines (workers), using Herdr's
+existing profiles, remote sessions and non-interactive transport. Local rows keep their existing format; remote
+rows add `worker` (the label) and `worker_id` (the stable profile ID). Names and pane IDs are scoped to a worker,
+so identically named agents are kept separate. An unavailable worker contributes an `error` row with its worker
+identity, without hiding local or other remote agents; a reachable empty worker contributes no rows. If discovery
+is unavailable (including on older Herdr versions), listing falls back to local behavior. Workers are queried
+sequentially and use Herdr's transport timeouts, so an unreachable worker can delay the response. Listing never
+starts servers, reconnects interactively, or changes profiles. Only each profile's saved session is queried, not
+every session on its host. **Remote agents are discovery-only:** `prompt_agent`, `read_agent`, `answer_agent` and
+`focus` still address Local; do not pass a remote agent's target to them. Use `herdr --machine <worker_id> …`
+explicitly outside the voice tools to control that worker.
 
 Herdr sets `HERDR_ENV=1` and your workspace and tab IDs in every pane it manages. Run outside Herdr, herdr-voice warns
 you and its commands go to whichever Herdr session is focused.
