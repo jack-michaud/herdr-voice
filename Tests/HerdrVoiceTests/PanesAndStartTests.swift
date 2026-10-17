@@ -17,6 +17,7 @@ private let snapshot = #"""
 private final class FakeHerdr {
     var ran: [[String]] = []
     var startReply = #"{"result":{"type":"agent_started"}}"#
+    var createReply = #"{"result":{"root_pane":{"pane_id":"w3:p1"},"workspace":{"workspace_id":"w3","label":"fix-login"}}}"#
     var agents = #"{"result":{"agents":[{"name":"claude-fix-login","pane_id":"w9:p1"}]}}"#
     func run(_ args: [String]) -> String {
         ran.append(args)
@@ -28,7 +29,7 @@ private final class FakeHerdr {
         case ("agent", "read"), ("pane", "read"): return #"{"result":{"read":{"text":"\u001b[32mready\u001b[0m on port 3000\n\n"}}}"#
         case ("pane", "split"): return #"{"result":{"pane":{"pane_id":"w1:p9","tab_id":"w1:t1"}}}"#
         case ("worktree", "create"), ("tab", "create"), ("workspace", "create"):
-            return #"{"result":{"root_pane":{"pane_id":"w3:p1"},"workspace":{"workspace_id":"w3","label":"fix-login"}}}"#
+            return createReply
         default: return #"{"result":{}}"#
         }
     }
@@ -94,6 +95,106 @@ func panesResolve(query: String, id: String) {
 
 // MARK: start_agent
 
+@Test("all providers advertise Pi alongside Claude and Codex", arguments: Provider.allCases)
+func startAgentSchemaIncludesPi(provider: Provider) throws {
+    let setup = provider.sessionUpdate(instructions: "INSTR", voice: provider.defaultVoice)
+    let tools: [[String: Any]]
+    let parameterKey: String
+    if provider == .gemini {
+        let body = try #require(setup["setup"] as? [String: Any])
+        let groups = try #require(body["tools"] as? [[String: Any]])
+        tools = try #require(groups.first?["functionDeclarations"] as? [[String: Any]])
+        parameterKey = "parametersJsonSchema"
+    } else {
+        let session = try #require(setup["session"] as? [String: Any])
+        tools = try #require(session["tools"] as? [[String: Any]])
+        parameterKey = "parameters"
+    }
+    let tool = try #require(tools.first { $0["name"] as? String == "start_agent" })
+    let parameters = try #require(tool[parameterKey] as? [String: Any])
+    let properties = try #require(parameters["properties"] as? [String: Any])
+    let kind = try #require(properties["kind"] as? [String: Any])
+    #expect(kind["enum"] as? [String] == ["claude", "codex", "pi"])
+    #expect(parameters["required"] as? [String] == ["kind"])
+    #expect((tool["description"] as? String)?.contains("Pi") == true)
+    #expect((kind["description"] as? String)?.contains("pi for Pi") == true)
+}
+
+@Test("every kind uses Herdr readiness and prompt delivery in every placement", arguments:
+    ["claude", "codex", "pi"], ["worktree", "tab", "workspace", "split-right", "split-down"])
+func startsEveryKindInEveryPlacement(kind: String, placement: String) throws {
+    for prompt in ["Fix the login bug", ""] {
+        let h = FakeHerdr()
+        var args: [String: Any] = ["kind": kind]
+        if !prompt.isEmpty { args["prompt"] = prompt }
+        let create: [String]
+        let baseName: String
+        let pane: String
+        switch placement {
+        case "worktree":
+            args.merge(["workspace": "forge", "branch": "fix login", "base": "main", "label": "login"]) { _, new in new }
+            create = ["worktree", "create", "--workspace", "w1", "--branch", "fix-login", "--no-focus", "--base", "main", "--label", "login"]
+            baseName = "\(kind)-fix-login"
+            pane = "w3:p1"
+        case "tab":
+            args.merge(["workspace": "site", "cwd": "/x/api", "label": "api", "focus": true]) { _, new in new }
+            create = ["tab", "create", "--workspace", "w2", "--focus", "--label", "api", "--cwd", "/x/api"]
+            baseName = "\(kind)-api"
+            pane = "w3:p1"
+        case "workspace":
+            args["cwd"] = "/x/new"
+            create = ["workspace", "create", "--no-focus", "--cwd", "/x/new"]
+            baseName = kind
+            pane = "w3:p1"
+        default:
+            args["split"] = "npm run build"
+            if placement == "split-down" {
+                args.merge(["direction": "down", "focus": true, "cwd": "/x/api"]) { _, new in new }
+                create = ["pane", "split", "w1:p2", "--direction", "down", "--focus", "--cwd", "/x/api"]
+            } else {
+                create = ["pane", "split", "w1:p2", "--direction", "right", "--no-focus"]
+            }
+            baseName = kind
+            pane = "w1:p9"
+        }
+        h.agents = #"{"result":{"agents":[{"name":"\#(baseName)"}]}}"#
+        let name = "\(baseName)-2"
+        let json = String(decoding: try JSONSerialization.data(withJSONObject: args), as: UTF8.self)
+        let out = call("start_agent", json, h)
+        var expected = [create, ["agent", "start", name, "--kind", kind, "--pane", pane, "--timeout", "60000"]]
+        if !prompt.isEmpty {
+            expected.append(["agent", "prompt", name, prompt, "--wait", "--until", "working", "--until", "blocked", "--timeout", "10000"])
+        }
+        #expect(h.mutations == expected)
+        #expect(out.watch == (prompt.isEmpty ? nil : name))
+        #expect(out.output.contains("started \(kind) as \(name)"))
+        #expect(out.output.contains(prompt.isEmpty ? "ready for instructions" : "is working"))
+    }
+}
+
+@Test("creation and launch failures never deliver the initial prompt", arguments:
+    ["claude", "codex", "pi"], ["create-error", "missing-pane", "launch-error"])
+func startAgentFailuresDoNotPrompt(kind: String, failure: String) {
+    let h = FakeHerdr()
+    if failure == "create-error" { h.createReply = #"{"error":{"code":"create_failed"}}"# }
+    if failure == "missing-pane" { h.createReply = #"{"result":{}}"# }
+    if failure == "launch-error" { h.startReply = #"{"error":{"code":"executable_not_found","message":"agent missing"}}"# }
+    let out = call("start_agent", #"{"kind":"\#(kind)","cwd":"/x","prompt":"go"}"#, h)
+    #expect(out.output.contains(failure == "launch-error" ? "agent didn't start" : "failed to create"))
+    #expect(out.watch == nil)
+    #expect(!h.ran.contains { $0.prefix(2) == ["agent", "prompt"] })
+    #expect(h.mutations.count == (failure == "launch-error" ? 2 : 1))
+}
+
+@Test("unsupported or missing kinds are rejected before any Herdr call", arguments:
+    [#"{}"#, #"{"kind":null}"#, #"{"kind":1}"#, #"{"kind":""}"#, #"{"kind":"vim"}"#, #"{"kind":"Pi"}"#])
+func startAgentRejectsInvalidKind(args: String) {
+    let h = FakeHerdr()
+    let out = call("start_agent", args, h)
+    #expect(out.output == "error: kind must be one of: claude, codex, pi")
+    #expect(h.ran.isEmpty)
+}
+
 @Test func startsClaudeInANewWorktreeAndHandsItTheFirstInstruction() {
     let h = FakeHerdr()
     h.agents = #"{"result":{"agents":[{"name":"claude-fix-login","pane_id":"w9:p1"}]}}"#
@@ -107,22 +208,24 @@ func panesResolve(query: String, id: String) {
     #expect(out.output.contains("started claude as claude-fix-login-2") && out.output.contains("is working"))
 }
 
-@Test func startsCodexInANewTabOrANewWorkspace() {
+@Test(arguments: ["claude", "codex", "pi"])
+func startsWithADefaultOrExplicitNameWithoutAPrompt(kind: String) {
     let h = FakeHerdr()
-    _ = call("start_agent", #"{"kind":"codex","workspace":"site","label":"api"}"#, h)
-    _ = call("start_agent", #"{"kind":"codex","cwd":"/x/new","name":"scout"}"#, h)
+    _ = call("start_agent", #"{"kind":"\#(kind)","workspace":"site","label":"api"}"#, h)
+    _ = call("start_agent", #"{"kind":"\#(kind)","cwd":"/x/new","name":"scout"}"#, h)
     #expect(h.mutations == [
         ["tab", "create", "--workspace", "w2", "--no-focus", "--label", "api"],
-        ["agent", "start", "codex-api", "--kind", "codex", "--pane", "w3:p1", "--timeout", "60000"],
+        ["agent", "start", "\(kind)-api", "--kind", kind, "--pane", "w3:p1", "--timeout", "60000"],
         ["workspace", "create", "--no-focus", "--cwd", "/x/new"],
-        ["agent", "start", "scout", "--kind", "codex", "--pane", "w3:p1", "--timeout", "60000"],
+        ["agent", "start", "scout", "--kind", kind, "--pane", "w3:p1", "--timeout", "60000"],
     ])
 }
 
-@Test func aStartupQuestionIsReadBackAndTheInstructionWaits() {
+@Test(arguments: ["claude", "codex", "pi"])
+func aStartupQuestionIsReadBackAndTheInstructionWaits(kind: String) {
     let h = FakeHerdr()
     h.startReply = #"{"error":{"code":"agent_not_ready","message":"blocked during startup"}}"#
-    let out = call("start_agent", #"{"kind":"claude","workspace":"forge","branch":"x","prompt":"go"}"#, h)
+    let out = call("start_agent", #"{"kind":"\#(kind)","workspace":"forge","branch":"x","prompt":"go"}"#, h)
     #expect(out.output.contains("stopped at a startup question") && out.output.contains("prompt_agent"))
     #expect(out.watch == nil)
     #expect(!h.ran.contains { $0[0] == "agent" && $0[1] == "prompt" })
@@ -136,9 +239,10 @@ func panesResolve(query: String, id: String) {
     #expect(h.mutations.isEmpty)
 }
 
-@Test func startingFromAnAgentReportNeedsASpokenYes() {
+@Test(arguments: ["claude", "codex", "pi"])
+func startingFromAnAgentReportNeedsASpokenYes(kind: String) {
     let h = FakeHerdr(), g = ConfirmGate(minDelay: 0, wait: 0.2)
-    let ask = call("start_agent", #"{"kind":"claude","cwd":"/x"}"#, h, gate: g, userInitiated: false).output
+    let ask = call("start_agent", #"{"kind":"\#(kind)","cwd":"/x"}"#, h, gate: g, userInitiated: false).output
     #expect(ask.hasPrefix("CONFIRMATION REQUIRED"))
     #expect(h.mutations.isEmpty)
 }
