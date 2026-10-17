@@ -114,7 +114,7 @@ These all use the original Swift dispatcher. With `HERDR_VOICE_SHELL=1`, the fin
 | `list_worktrees` | "What worktrees does forge have?" |
 | `create_worktree` | "Create a worktree on a patch branch for login." |
 | `open_worktree` | "Open the existing login-fix worktree." |
-| `start_agent` | "Start Codex in a new tab and have it review the API." |
+| `start_agent` | "Start Pi in a new tab and have it review the API." (Claude Code and Codex also supported.) |
 | `list_panes` | "What panes are in this workspace?" |
 | `read_pane` | "Read the build pane." |
 | `watch_pane` | "Tell me when the build prints done." |

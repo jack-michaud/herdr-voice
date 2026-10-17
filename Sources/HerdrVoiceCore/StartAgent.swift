@@ -1,17 +1,17 @@
 import Foundation
 
-/// One request, one agent: make the place (a new worktree, tab or workspace) and start Claude Code or Codex in it,
-/// optionally handing it a first instruction.
+/// One request, one agent: make the place (a split pane, new worktree, tab or workspace) and start
+/// Claude Code, Codex or Pi in it, optionally handing it a first instruction.
 extension HerdrTools {
-    public static let agentKinds = ["claude", "codex"]
+    public static let agentKinds = ["claude", "codex", "pi"]
 
     static let startAgentSchema = fn(
         "start_agent",
-        "Start a Claude Code or Codex agent somewhere new in one step: next to an existing pane (give split, and "
+        "Start a Claude Code, Codex or Pi agent somewhere new in one step: next to an existing pane (give split, and "
             + "direction right or down), in a new git worktree (give workspace and branch), "
             + "in a new tab of a workspace (give workspace only), or in a new workspace (no workspace; give cwd and/or label). "
             + "Optionally give it a first instruction. Takes up to a minute while the agent starts.",
-        ["kind": ["type": "string", "enum": agentKinds, "description": "claude for Claude Code, codex for Codex"],
+        ["kind": ["type": "string", "enum": agentKinds, "description": "claude for Claude Code, codex for Codex, pi for Pi"],
          "split": str("Pane or agent to split, by ID, agent name or title; the agent starts in the new pane"),
          "direction": directionField,
          "workspace": str("Workspace name or ID: the repository for a new worktree, or where to add a tab"),
@@ -32,7 +32,7 @@ extension HerdrTools {
             (args[key] as? String).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.flatMap { $0.isEmpty ? nil : $0 }
         }
         func say(_ s: String) -> Outcome { Outcome(output: s, watch: nil) }
-        guard let kind = text("kind"), agentKinds.contains(kind) else { return say("error: kind must be claude or codex") }
+        guard let kind = text("kind"), agentKinds.contains(kind) else { return say("error: kind must be one of: \(agentKinds.joined(separator: ", "))") }
         let focusFlag = args["focus"] as? Bool == true ? "--focus" : "--no-focus"
 
         // Where it goes.
@@ -81,6 +81,7 @@ extension HerdrTools {
         guard !made.contains("\"error\""), let pane = rootPane(made) else {
             return say("failed to create \(place), tell the developer and do not retry: \(made)")
         }
+        // Herdr launches the interactive agent and waits for readiness using its built-in integrations, including Pi.
         let started = run(["agent", "start", name, "--kind", kind, "--pane", pane, "--timeout", String(startTimeoutMs)])
         let intro = "made \(place)\(self.made(made)) (pane \(pane)) and started \(kind) as \(name)"
         if let code = errorCode(started) {
