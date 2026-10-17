@@ -19,10 +19,17 @@ func setupGolden(provider: Provider, expected: String) {
     #expect(sha(withoutLaterTools(provider.sessionUpdate(instructions: "INSTR", voice: "VOICE"))) == expected)
 }
 
-/// Tools added after the recording (workspace/tab/worktree management, panes, start_agent) are left out; everything else must match.
+/// Exclude later tools and restore the recorded list_agents description (remote discovery expanded it).
+/// Everything else in the original wire recording must still match.
 private func withoutLaterTools(_ update: [String: Any]) -> [String: Any] {
     guard var session = update["session"] as? [String: Any], let tools = session["tools"] as? [[String: Any]] else { return update }
-    session["tools"] = tools.filter { !HerdrTools.manageTools.union(HerdrTools.paneTools).union(["start_agent", "split_pane"]).union(HerdrTools.paneControlTools).contains($0["name"] as? String ?? "") }
+    session["tools"] = tools.filter { !HerdrTools.manageTools.union(HerdrTools.paneTools).union(["start_agent", "split_pane"]).union(HerdrTools.paneControlTools).contains($0["name"] as? String ?? "") }.map { tool in
+        var recorded = tool
+        if tool["name"] as? String == "list_agents" {
+            recorded["description"] = "List coding agents running in Herdr panes with name, status, cwd and title."
+        }
+        return recorded
+    }
     var out = update
     out["session"] = session
     return out

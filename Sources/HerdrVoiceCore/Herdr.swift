@@ -20,7 +20,9 @@ public enum HerdrTools {
     }
 
     static let herdrSchemas: [[String: Any]] = [
-        fn("list_agents", "List coding agents running in Herdr panes with name, status, cwd and title.", [:], []),
+        fn("list_agents", "List local coding agents and agents on enabled saved remote workers, with name, status, cwd and title. "
+           + "Remote rows include worker and worker_id; error rows identify unavailable workers. "
+           + "Remote agents are discovery-only: the other voice tools still target Local, not these workers.", [:], []),
         fn("prompt_agent", "Send an instruction to a coding agent. Returns once the agent starts working. "
            + "If it answers CONFIRMATION REQUIRED, ask the developer and call again with confirmed=true after they say yes.",
            ["target": str("Agent name or pane_id from list_agents"), "text": str("The instruction for the agent"),
@@ -123,7 +125,7 @@ public enum HerdrTools {
         let confirmed = args["confirmed"] as? Bool ?? false
         switch name {
         case "list_agents":
-            return Outcome(output: trimAgents(run(["agent", "list"])), watch: nil)
+            return Outcome(output: listAgents(run), watch: nil)
         case "prompt_agent":
             let text = args["text"] as? String ?? ""
             if !userInitiated, let stop = confirmStep(name, action: "\(name):\(target):\(text)",
@@ -237,12 +239,14 @@ public enum HerdrTools {
               let result = obj["result"] as? [String: Any],
               let agents = result["agents"] as? [[String: Any]]
         else { return json }
-        let slim = agents.map { a -> [String: Any] in
-            ["target": a["name"] ?? a["pane_id"] ?? "", "kind": a["agent"] ?? "", "status": a["agent_status"] ?? "",
-             "cwd": a["cwd"] ?? "", "title": a["terminal_title_stripped"] ?? ""]
-        }
+        let slim = agents.map(slimAgent)
         let data = (try? JSONSerialization.data(withJSONObject: slim, options: [.sortedKeys])) ?? Data()
         return String(decoding: data, as: UTF8.self)
+    }
+
+    static func slimAgent(_ a: [String: Any]) -> [String: Any] {
+        ["target": a["name"] ?? a["pane_id"] ?? "", "kind": a["agent"] ?? "", "status": a["agent_status"] ?? "",
+         "cwd": a["cwd"] ?? "", "title": a["terminal_title_stripped"] ?? ""]
     }
 
     static func str(_ d: String) -> [String: Any] { ["type": "string", "description": d] }
